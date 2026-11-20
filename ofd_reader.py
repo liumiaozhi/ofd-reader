@@ -44,7 +44,7 @@ except Exception:                                  # pragma: no cover
     ImageTk = None
 
 APP_NAME = "OFD 阅读转换器"
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.2.3"
 PROGID = "OFDReader.Document"
 APP_ID = "Local.OFDReader.1"
 
@@ -2615,21 +2615,33 @@ def run_gui_smoke(source, report_path=""):
             # 后开的窗口把先开窗口的滚轮回调顶掉，导致一个窗口滚不动。
             def wheel_scrolls(win):
                 # type: (object) -> bool
+                # 必须临时置顶：窗口被前台程序遮住时 winfo_containing
+                # 命中的是别的窗口，滚轮事件不会归本程序，测出来是假失败。
+                try:
+                    win.root.attributes("-topmost", True)
+                except Exception:
+                    pass
                 win.root.lift()
                 win.root.update()
-                view = win.view
-                if view is None:
-                    return False
-                canvas = view.canvas
-                canvas.yview_moveto(0.0)
-                win.root.update()
-                before = canvas.yview()[0]
-                cx = canvas.winfo_rootx() + canvas.winfo_width() // 2
-                cy = canvas.winfo_rooty() + canvas.winfo_height() // 2
-                canvas.event_generate("<MouseWheel>", delta=-120,
-                                      x=60, y=60, rootx=cx, rooty=cy)
-                win.root.update()
-                return canvas.yview()[0] > before
+                try:
+                    view = win.view
+                    if view is None:
+                        return False
+                    canvas = view.canvas
+                    canvas.yview_moveto(0.0)
+                    win.root.update()
+                    before = canvas.yview()[0]
+                    cx = canvas.winfo_rootx() + canvas.winfo_width() // 2
+                    cy = canvas.winfo_rooty() + canvas.winfo_height() // 2
+                    canvas.event_generate("<MouseWheel>", delta=-120,
+                                          x=60, y=60, rootx=cx, rooty=cy)
+                    win.root.update()
+                    return canvas.yview()[0] > before
+                finally:
+                    try:
+                        win.root.attributes("-topmost", False)
+                    except Exception:
+                        pass
 
             ok = check(wheel_scrolls(detached), "独立窗口滚轮翻页") and ok
             ok = check(wheel_scrolls(app), "主窗口滚轮翻页") and ok
