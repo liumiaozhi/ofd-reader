@@ -1548,6 +1548,22 @@ class CoordResolver(object):
         self.page_no = page_no
         self.votes = {}      # type: Dict[str, int]
 
+    def dominant_mode(self):
+        # type: () -> Optional[str]
+        """本页已经形成多数派时返回它，否则 None。
+
+        同一页里的文字对象应当采用同一种坐标解释；某些大字号标题对象在两种
+        解释下 IoU 很接近，逐对象独立判定会各自选边，结果同一行的字落在不同
+        基线上（看起来就是"红头错乱"）。这里用多数派做一致性约束。
+        """
+        total = sum(self.votes.values())
+        if total < 3:
+            return None
+        mode, count = max(self.votes.items(), key=lambda kv: kv[1])
+        if count / float(total) >= 0.6:
+            return mode
+        return None
+
     def transform(self, mode, x, y, box, ctm):
         # type: (str, float, float, Optional[Box], Optional[Sequence[float]]) -> Tuple[float, float]
         if mode == "C":
@@ -1591,6 +1607,7 @@ class CoordResolver(object):
         pb = self.page_box
         best_mode = None
         best_score = -1.0
+        scores = {}       # type: Dict[str, float]
         for mode in allowed:
             xs = []
             ys = []
@@ -1612,9 +1629,19 @@ class CoordResolver(object):
                 continue
             gb = Box(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
             score = box_iou(gb, box) if box is not None else 0.5
+            scores[mode] = score
             if score > best_score or (abs(score - best_score) < 1e-9 and best_mode is None):
                 best_score = score
                 best_mode = mode
+
+        # 页内一致性：如果本对象没有明显优势，就跟随本页的多数派，
+        # 避免同一行文字被拆到不同基线上。
+        dominant = self.dominant_mode()
+        if (dominant is not None and best_mode is not None
+                and dominant != best_mode and dominant in scores):
+            if scores[dominant] >= max(0.60, best_score * 0.85):
+                best_mode = dominant
+                best_score = scores[dominant]
         if best_mode is None:
             # 兜底：全页多数票
             best_mode = max(self.votes.items(), key=lambda kv: kv[1])[0] \
