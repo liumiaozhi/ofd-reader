@@ -18,6 +18,7 @@ jobs:
   build:
     name: 打包与校验
     runs-on: windows-latest
+    timeout-minutes: 30
     env:
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: "1"
@@ -53,13 +54,23 @@ jobs:
 
       - name: 冻结后自检（解析 / 渲染 / 导出）
         run: |
-          .\dist\ofd阅读转换器.exe --version
-          .\dist\ofd阅读转换器.exe --selftest out\sample.ofd --report out\selftest.txt
+          # exe 是 GUI 子系统程序：PowerShell 直接调用不会等待它结束，
+          # 必须用 Start-Process -Wait，否则下面读报告时文件还没生成。
+          $exe = ".\dist\ofd阅读转换器.exe"
+          "文件版本 = " + (Get-Item $exe).VersionInfo.FileVersion
+          $p = Start-Process -FilePath $exe -NoNewWindow -Wait -PassThru `
+               -ArgumentList "--selftest", "out\sample.ofd", "--report", "out\selftest.txt"
+          "退出码 = $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { throw "自检失败（退出码 $($p.ExitCode)）" }
           Get-Content out\selftest.txt -Encoding UTF8
 
       - name: 冻结后界面冒烟（多标签 / 拆窗 / 滚轮）
         run: |
-          .\dist\ofd阅读转换器.exe --smoke-gui out\sample.ofd --report out\smoke.txt
+          $exe = ".\dist\ofd阅读转换器.exe"
+          $p = Start-Process -FilePath $exe -NoNewWindow -Wait -PassThru `
+               -ArgumentList "--smoke-gui", "out\sample.ofd", "--report", "out\smoke.txt"
+          "退出码 = $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { throw "界面冒烟失败（退出码 $($p.ExitCode)）" }
           Get-Content out\smoke.txt -Encoding UTF8
 
       - name: 汇总报告
