@@ -1,10 +1,13 @@
 # OFD 阅读转换器
 
+[![build](https://github.com/liumiaozhi/ofd-reader/actions/workflows/build.yml/badge.svg)](https://github.com/liumiaozhi/ofd-reader/actions/workflows/build.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Windows 桌面程序：打开阅读 `.ofd` 版式文档，并可导出为 Word（可编辑）或 PDF。
 同时保留命令行脚本形态，便于批处理与二次集成。
 
 > 现成程序见 [Releases](https://github.com/liumiaozhi/ofd-reader/releases/latest)：
-> `ofd-reader-1.2.1.exe`（单文件，约 18 MB，Windows 7 SP1 及以上）。也可以按第三节自行打包。
+> `ofd-reader-<版本>.exe`（单文件，约 18 MB，Windows 7 SP1 及以上）。也可以按第三节自行打包。
 > 下载后可随意改名，程序窗口标题固定为「OFD 阅读转换器」。
 
 - **多文档标签**：一次打开多个 `.ofd`，标签像浏览器一样从左到右排列，每个标签各自记页码/缩放/选中
@@ -17,12 +20,22 @@ Windows 桌面程序：打开阅读 `.ofd` 版式文档，并可导出为 Word�
 - **导出 PDF**：每页一张位图，适合查看与打印
 - **右键集成**：可注册到资源管理器「打开方式」，右击 `.ofd` 直接打开
 
-![图标](assets/logo.png)
+## 界面
+
+![多标签阅读](docs/screenshots/tabs.png)
+
+*多标签：一次打开多个文件，标签从左到右排列；框选文字后 Ctrl+C 复制*
+
+![独立窗口](docs/screenshots/detached.png)
+
+*双击标签拆成独立窗口，可并排对照；表格与图片按页面原样渲染*
+
+> 截图由 `tools/capture_screenshots.py` 用**合成样本**生成，不含任何真实文档内容。
 
 ## 一、直接使用 exe（推荐）
 
 从 [Releases](https://github.com/liumiaozhi/ofd-reader/releases/latest) 下载
-`ofd-reader-1.2.1.exe`（附件用英文名是为了避开 GitHub 对中文文件名的截断），
+`ofd-reader-<版本>.exe`（附件用英文名是为了避开 GitHub 对中文文件名的截断），
 单文件绿色程序，约 18 MB，拷到任意位置双击即可，不用装 Python。
 
 ### 运行前提（Windows 7 特别注意）
@@ -137,6 +150,10 @@ dist\ofd阅读转换器.exe --smoke-gui 样本.ofd --report gui.txt
 | `build.bat` | 一键打包 |
 | `assets/logo.ico` `logo.png` | 程序图标（16/24/32/48/64/128/256 多尺寸） |
 | `tools/make_icon.py` | 图标生成脚本（Pillow 绘制，不依赖 ImageMagick） |
+| `tools/make_sample.py` | 合成演示用 OFD（自测、CI 与截图都用它，内容虚构） |
+| `tools/capture_screenshots.py` | 生成 README 截图（需要桌面环境） |
+| `docs/screenshots/` | README 用的界面截图 |
+| `LICENSE` | MIT 许可证 |
 | `tests/` | 校验脚本：文本逐行比对、纵向位置精度、用 Word 打开验证 |
 | `out/` | 转换与渲染产物（本地生成，不随仓库分发） |
 
@@ -200,3 +217,19 @@ dist\ofd阅读转换器.exe --smoke-gui 样本.ofd --report gui.txt
 | 表格没识别出来 | 该表格没有完整边框线，识别置信度不足会按正文输出（报告里有 `TABLE_REJECTED`） |
 | 标签太多看不到后面的 | 标签栏支持横向滚动：在标签栏上滚轮，或拖动下方滑块 |
 | 想同时看两份文件 | 双击其中一个标签拆成独立窗口，两个窗口可并排摆放 |
+
+## 八、持续集成
+
+`.github/workflows/build.yml` 在 `windows-latest` + Python 3.8 上跑三步：
+
+1. **语法门禁**：`py_compile` 编译三个模块，确保没有超出 3.8 的语法；
+2. **核心自测**：`python ofd2docx.py --self-test`（36 项断言，现场合成样本，不依赖外部文件）；
+3. **打包后验证**：用 spec 打出 exe，再跑 `--selftest`（解析/渲染/导出）与 `--smoke-gui`
+   （多标签 → 滚动 → 双页 → 缩放 → 框选 → 拆窗 → 关闭全部），任何一步失败就判构建失败。
+
+产物 `ofd-reader-win64` 作为 Actions artifact 保留；打 `v*` 标签时会自动改名成
+`ofd-reader-<tag>.exe` 附加到同名 Release。
+
+## 九、许可证
+
+[MIT](LICENSE) © 2026 liumiaozhi

@@ -44,7 +44,7 @@ except Exception:                                  # pragma: no cover
     ImageTk = None
 
 APP_NAME = "OFD 阅读转换器"
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 PROGID = "OFDReader.Document"
 APP_ID = "Local.OFDReader.1"
 
@@ -607,6 +607,14 @@ class DocView(object):
         for page in sorted(slots):
             self._create_placeholder(slots[page])
         self.canvas.config(scrollregion=(0, 0, content_w, content_h))
+        # 不需要横向滚动时把滚动条收起来，别留一条空槽
+        try:
+            if content_w <= canvas_w + 0.5:
+                self.hbar.grid_remove()
+            else:
+                self.hbar.grid()
+        except Exception:
+            pass
 
         if anchor is not None:
             self._restore_anchor(anchor)
