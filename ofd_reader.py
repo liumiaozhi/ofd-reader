@@ -2707,6 +2707,7 @@ def main(argv=None):
     # type: (object) -> int
     args = build_argparser().parse_args(argv)
     attach_parent_console()
+    ox.ensure_console_encoding()
     set_app_user_model_id()
 
     if args.register:

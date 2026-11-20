@@ -3478,8 +3478,33 @@ def _fail(message, code, quiet=False):
     return code
 
 
+def ensure_console_encoding():
+    # type: () -> None
+    """控制台编码写不了中文时改用 UTF-8。
+
+    英文版 Windows 的代码页是 1252，直接 print 中文会抛 UnicodeEncodeError，
+    整个自测会因此中断。这里先探测：能编码就不动（中文系统保持 cp936），
+    不能编码才切 UTF-8 并允许替换字符，宁可显示成问号也不要崩。
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        if stream is None:
+            continue
+        encoding = getattr(stream, "encoding", None) or "ascii"
+        try:
+            u"中文".encode(encoding)
+            continue
+        except Exception:
+            pass
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def main(argv=None):
     # type: (Optional[List[str]]) -> int
+    ensure_console_encoding()
     args = build_argparser().parse_args(argv)
 
     if args.self_test:
