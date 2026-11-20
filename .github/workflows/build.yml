@@ -102,4 +102,21 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/ofd-reader-*.exe
-          generate_release_notes: true
+          body: |
+            Windows 单文件版（64 位），约 17 MB。
+
+            ## 下载
+            `ofd-reader-${{ github.ref_name }}.exe`：双击即可运行，不用装 Python；
+            下载后可随意改名，程序窗口标题固定为「OFD 阅读转换器」。
+
+            ## 运行前提
+            - Windows 7 SP1 及以上，需已安装 UCRT（KB2999226）与 VC++ 2015-2019 运行库
+            - 公文常用的「方正小标宋简体」如未安装，大标题会回退为宋体
+
+            ## 已知限制
+            - 导出 Word 为流式排版，换行与字距可能与原件有毫米级差异
+            - 导出 PDF 为位图，文字不可选中、不可搜索
+            - 表格仅支持由水平/垂直线段构成的规则表格
+
+            完整变更：[提交历史](https://github.com/liumiaozhi/ofd-reader/commits/main)｜
+            构建记录见 [Actions](https://github.com/liumiaozhi/ofd-reader/actions)
