@@ -93,7 +93,8 @@ jobs:
       - name: 为 Release 准备 ASCII 文件名
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          Copy-Item "dist\ofd阅读转换器.exe" "dist\ofd-reader-${{ github.ref_name }}.exe"
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          Copy-Item "dist\ofd阅读转换器.exe" "dist\ofd-reader-$tag.exe"
           Get-ChildItem dist\*.exe | Select-Object Name, Length
 
       - name: 附加 exe 到 Release
