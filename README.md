@@ -4,7 +4,8 @@ Windows 桌面程序：打开阅读 `.ofd` 版式文档，并可导出为 Word�
 同时保留命令行脚本形态，便于批处理与二次集成。
 
 > 现成程序见 [Releases](https://github.com/liumiaozhi/ofd-reader/releases/latest)：
-> `ofd阅读转换器.exe`（单文件，约 18 MB，Windows 7 SP1 及以上）。也可以按第三节自行打包。
+> `ofd-reader-1.2.1.exe`（单文件，约 18 MB，Windows 7 SP1 及以上）。也可以按第三节自行打包。
+> 下载后可随意改名，程序窗口标题固定为「OFD 阅读转换器」。
 
 - **多文档标签**：一次打开多个 `.ofd`，标签像浏览器一样从左到右排列，每个标签各自记页码/缩放/选中
 - **独立窗口**：双击标签或右键「在新窗口中打开」，把文档拆成独立窗口；一个窗口里也能继续开多个标签
@@ -20,7 +21,8 @@ Windows 桌面程序：打开阅读 `.ofd` 版式文档，并可导出为 Word�
 
 ## 一、直接使用 exe（推荐）
 
-从 [Releases](https://github.com/liumiaozhi/ofd-reader/releases/latest) 下载 `ofd阅读转换器.exe`，
+从 [Releases](https://github.com/liumiaozhi/ofd-reader/releases/latest) 下载
+`ofd-reader-1.2.1.exe`（附件用英文名是为了避开 GitHub 对中文文件名的截断），
 单文件绿色程序，约 18 MB，拷到任意位置双击即可，不用装 Python。
 
 ### 运行前提（Windows 7 特别注意）
