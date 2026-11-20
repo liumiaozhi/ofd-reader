@@ -1059,8 +1059,17 @@ class ResourceTable(object):
         for el in children(root, "ColorSpaces"):
             for cs in children(el, "ColorSpace"):
                 cid = attr(cs, "ID")
-                if cid is not None:
-                    self.colors[cid] = attr(cs, "Type") or "RGB"
+                if cid is None:
+                    continue
+                palette = []
+                pal = child(cs, "Palette")
+                if pal is not None:
+                    for entry in children(pal, "PaletteEntry"):
+                        palette.append(
+                            parse_color_value(attr(entry, "Value"), "RGB"))
+                self.colors[cid] = {"type": attr(cs, "Type") or "RGB",
+                                    "palette": palette,
+                                    "bits": attr(cs, "BitsPerComponent")}
 
         for el in children(root, "DrawParams"):
             for dp in children(el, "DrawParam"):
@@ -1089,20 +1098,44 @@ class ResourceTable(object):
         # type: (Optional[str]) -> str
         if ref is None:
             return "RGB"
-        return self.colors.get(str(ref), "RGB")
+        info = self.colors.get(str(ref))
+        if isinstance(info, dict):
+            return str(info.get("type") or "RGB")
+        return str(info) if info else "RGB"
+
+    def color_from(self, value, ref=None):
+        # type: (Optional[str], Optional[str]) -> Tuple[int, int, int]
+        """按颜色空间解析颜色。
+
+        Index / Separation 的 Value 是调色板下标，不是 RGB 分量：
+        以前直接当 RGB 读，红色会解析成 (1, 0, 0) 这种近乎黑的颜色，
+        这也是同一份文件在别的阅读器里是红头、在本程序里发黑的原因。
+        """
+        kind = self.color_space_type(ref)
+        if kind in ("Index", "Separation"):
+            info = self.colors.get(str(ref)) if ref is not None else None
+            palette = info.get("palette") if isinstance(info, dict) else None
+            try:
+                index = int(parse_array(value)[0])
+            except Exception:
+                return (0, 0, 0)
+            if palette and 0 <= index < len(palette):
+                return palette[index]
+            return (0, 0, 0)
+        return parse_color_value(value, kind)
 
     def color_of(self, fill_el, dp_el, depth=0):
         # type: (Any, Any, int) -> Tuple[int, int, int]
         """按 对象自身 → DrawParam 继承链 的顺序取填充色。"""
         if fill_el is not None:
-            kind = self.color_space_type(attr(fill_el, "ColorSpace"))
-            return parse_color_value(attr(fill_el, "Value"), kind)
+            return self.color_from(attr(fill_el, "Value"),
+                                   attr(fill_el, "ColorSpace"))
         if dp_el is None or depth > 8:
             return (0, 0, 0)
         fc = child(dp_el, "FillColor")
         if fc is not None:
-            kind = self.color_space_type(attr(fc, "ColorSpace"))
-            return parse_color_value(attr(fc, "Value"), kind)
+            return self.color_from(attr(fc, "Value"),
+                                   attr(fc, "ColorSpace"))
         rel = attr(dp_el, "Relative")
         if rel is not None:
             parent = self.params.get(str(rel))
@@ -1114,15 +1147,15 @@ class ResourceTable(object):
         """取对象某个颜色属性（FillColor / StrokeColor），支持 DrawParam 继承链。"""
         el = child(obj, name)
         if el is not None:
-            return parse_color_value(
-                attr(el, "Value"), self.color_space_type(attr(el, "ColorSpace")))
+            return self.color_from(attr(el, "Value"),
+                                   attr(el, "ColorSpace"))
         node = dp_el
         depth = 0
         while node is not None and depth < 8:
             e = child(node, name)
             if e is not None:
-                return parse_color_value(
-                    attr(e, "Value"), self.color_space_type(attr(e, "ColorSpace")))
+                return self.color_from(attr(e, "Value"),
+                                       attr(e, "ColorSpace"))
             rel = attr(node, "Relative")
             node = self.params.get(str(rel)) if rel is not None else None
             depth += 1
@@ -4108,6 +4141,51 @@ def run_self_test(out_dir="", verbose=0):
         check("纯图片页图片已插入", len(doc7.inline_shapes) == 1)
     except Exception as exc:
         check("用例 6 执行", False, "%s: %s" % (type(exc).__name__, exc))
+
+    try:
+        # 用例 7：调色板颜色（ColorSpace Type="Index"）不能当成 RGB 解析
+        palette_res = (
+            _xml_decl() +
+            '<ofd:Res xmlns:ofd="%s" BaseLoc="Res"><ofd:ColorSpaces>'
+            '<ofd:ColorSpace ID="3" Type="Index" BitsPerComponent="8">'
+            '<ofd:Palette>'
+            '<ofd:PaletteEntry Value="0 0 0"/>'
+            '<ofd:PaletteEntry Value="255 0 0"/>'
+            '</ofd:Palette></ofd:ColorSpace></ofd:ColorSpaces>'
+            '<ofd:DrawParams><ofd:DrawParam ID="5">'
+            '<ofd:FillColor Value="1" ColorSpace="3"/>'
+            '</ofd:DrawParam></ofd:DrawParams></ofd:Res>' % OFD_NS)
+        palette_body = (
+            '<ofd:PathObject ID="800" Boundary="20 40 100 2" Fill="true" '
+            'Stroke="false" AbbreviatedData="M 0 0 L 100 0 L 100 2 L 0 2 C">'
+            '<ofd:FillColor Value="1" ColorSpace="3"/></ofd:PathObject>'
+            + _text_obj(801, 20.0, 60.0, "调色板红色", size=6.0))
+        palette_path = os.path.join(base, "palette.ofd")
+        with zipfile.ZipFile(palette_path, "w") as zf:
+            zf.writestr("OFD.xml", _ofd_xml("Doc_0/Document.xml"))
+            zf.writestr("Doc_0/Document.xml",
+                        _document_xml(["Pages/Page_1/Content.xml"],
+                                      (210.0, 297.0)))
+            zf.writestr("Doc_0/PublicRes.xml", palette_res)
+            zf.writestr("Doc_0/DocumentRes.xml",
+                        _xml_decl() + ('<ofd:Res xmlns:ofd="%s"/>' % OFD_NS))
+            zf.writestr("Doc_0/Pages/Page_1/Content.xml",
+                        _page_content((210.0, 297.0), palette_body))
+        pkg_p = open_package(palette_path)
+        try:
+            meta_p, _o1, _o2, _d1, _d2, res_p = load_document(pkg_p, Report())
+            page_p = load_page(pkg_p, meta_p.pages[0][0], 1, meta_p, res_p,
+                               Report(), Options(), meta_p.pages[0][1])
+            fills = [v["fill_color"] for v in page_p.vectors]
+            check("调色板索引解析为红色", bool(fills) and fills[0] == (255, 0, 0),
+                  "实际 %r" % (fills[:1],))
+            check("调色板颜色空间被记录",
+                  res_p.colors.get("3", {}).get("type") == "Index",
+                  repr(res_p.colors.get("3")))
+        finally:
+            pkg_p.close()
+    except Exception as exc:
+        check("用例 7 执行", False, "%s: %s" % (type(exc).__name__, exc))
 
     # ---- 汇总 -------------------------------------------------------
     failed = [r for r in results if not r[1]]

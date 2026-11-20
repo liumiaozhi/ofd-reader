@@ -43,7 +43,7 @@ jobs:
       - name: 语法门禁（必须兼容 3.8）
         run: python -m py_compile ofd2docx.py ofd_view.py ofd_reader.py tools/make_sample.py tools/capture_screenshots.py
 
-      - name: 核心自测（36 项断言，现场合成样本）
+      - name: 核心自测（38 项断言，现场合成样本）
         run: python ofd2docx.py --self-test
 
       - name: 生成演示样本
