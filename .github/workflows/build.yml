@@ -94,6 +94,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           $tag = "${{ github.ref_name }}".TrimStart("v")
+          "TAG_VER=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Copy-Item "dist\ofd阅读转换器.exe" "dist\ofd-reader-$tag.exe"
           Get-ChildItem dist\*.exe | Select-Object Name, Length
 
@@ -106,7 +107,7 @@ jobs:
             Windows 单文件版（64 位），约 17 MB。
 
             ## 下载
-            `ofd-reader-${{ github.ref_name }}.exe`：双击即可运行，不用装 Python；
+            `ofd-reader-${{ env.TAG_VER }}.exe`：双击即可运行，不用装 Python；
             下载后可随意改名，程序窗口标题固定为「OFD 阅读转换器」。
 
             ## 运行前提
@@ -117,6 +118,7 @@ jobs:
             - 导出 Word 为流式排版，换行与字距可能与原件有毫米级差异
             - 导出 PDF 为位图，文字不可选中、不可搜索
             - 表格仅支持由水平/垂直线段构成的规则表格
+            - 「红头着色」「印章着色」为启发式识别，只对灰度件生效，默认关闭（视图菜单）
 
             完整变更：[提交历史](https://github.com/liumiaozhi/ofd-reader/commits/main)｜
             构建记录见 [Actions](https://github.com/liumiaozhi/ofd-reader/actions)
