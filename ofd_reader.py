@@ -44,7 +44,7 @@ except Exception:                                  # pragma: no cover
     ImageTk = None
 
 APP_NAME = "OFD 阅读转换器"
-APP_VERSION = "1.2.4"
+APP_VERSION = "1.3.0"
 PROGID = "OFDReader.Document"
 APP_ID = "Local.OFDReader.1"
 
@@ -58,6 +58,21 @@ CANVAS_MARGIN = 18       # 画布四周留白
 
 MODE_SINGLE = "single"
 MODE_SPREAD = "spread"
+
+# 红头着色：全局开关（多窗口共用）。默认关闭——有些文件本身就是灰度，
+# 要不要按公文红显示交给用户决定，避免"看起来像改了原件"。
+_REDHEAD = {"on": False}
+_SEALCOLOR = {"on": False}
+
+
+def redhead_enabled():
+    # type: () -> bool
+    return bool(_REDHEAD["on"])
+
+
+def seal_color_enabled():
+    # type: () -> bool
+    return bool(_SEALCOLOR["on"])
 
 # 标签栏配色（浅色，和 vista 主题一致）
 TAB_BAR_BG = "#e9edf0"
@@ -543,6 +558,20 @@ class DocView(object):
         self._slot_items.clear()
         self._cache.clear()
 
+    def refresh_render(self):
+        # type: () -> None
+        """全局显示开关（如红头着色）变化后重绘：可见的立刻重排，隐藏的释放位图。"""
+        if self.doc is None:
+            return
+        self._cache.clear()
+        try:
+            if self.win is not None and self.win.view is self:
+                self.on_show()
+            else:
+                self.on_hide()
+        except Exception:
+            pass
+
     # -- 布局 -------------------------------------------------------------
     def _ppm(self):
         # type: () -> float
@@ -734,7 +763,9 @@ class DocView(object):
         try:
             model = self._get_model(page)
             image = vw.render_page(model, self.resolver, dpi=BASE_DPI,
-                                   scale=self.zoom)
+                                   scale=self.zoom,
+                                   redhead=redhead_enabled(),
+                                   seal_red=seal_color_enabled())
         except Exception as exc:                   # pragma: no cover
             self._set_status("第 %d 页渲染失败：%s" % (page, exc))
             return
@@ -1150,7 +1181,11 @@ class DocView(object):
         src = self.path
         options = ox.Options()
         # 矢量横线与印章通过透明图层还原，缺了它红头/版记横线和印章会丢
-        options.overlay_func = vw.overlay_png
+        red = redhead_enabled()
+        seal = seal_color_enabled()
+        options.overlay_func = (
+            lambda page, skip=None: vw.overlay_png(page, skip, redhead=red,
+                                                   seal_red=seal))
 
         def job():
             report = ox.Report()
@@ -1180,6 +1215,8 @@ class DocView(object):
         if not target:
             return
         src = self.path
+        red = redhead_enabled()
+        seal = seal_color_enabled()
 
         def job():
             doc = ox.OfdDocument(src)
@@ -1188,7 +1225,8 @@ class DocView(object):
                 images = []
                 for index in range(1, doc.page_count + 1):
                     page = doc.get_page(index)
-                    images.append(vw.render_page(page, resolver, dpi=150))
+                    images.append(vw.render_page(page, resolver, dpi=150,
+                                                 redhead=red, seal_red=seal))
             finally:
                 doc.close()
             vw.export_pdf(images, target, dpi=150)
@@ -1229,6 +1267,8 @@ class ReaderApp(object):
         self._tab_menu = None
         self._empty = None
         self._closed = False
+        self.redhead_var = tk.BooleanVar(master=root, value=redhead_enabled())
+        self.seal_var = tk.BooleanVar(master=root, value=seal_color_enabled())
 
         if isinstance(self.root, tk.Tk):
             self.root.geometry("1120x840")
@@ -1481,6 +1521,13 @@ class ReaderApp(object):
                               command=self.fit_width)
         view_menu.add_command(label="实际大小", accelerator="Ctrl+1",
                               command=self.actual_size)
+        view_menu.add_separator()
+        view_menu.add_checkbutton(label="红头着色（灰度红头显示为红色）",
+                                  variable=self.redhead_var,
+                                  command=self.toggle_redhead)
+        view_menu.add_checkbutton(label="印章着色（灰度印章显示为朱红）",
+                                  variable=self.seal_var,
+                                  command=self.toggle_seal_color)
         view_menu.add_separator()
         view_menu.add_command(label="下一个标签", accelerator="Ctrl+Tab",
                               command=lambda: self.cycle_tab(1))
@@ -2141,6 +2188,39 @@ class ReaderApp(object):
         if self.view is not None:
             self.view.actual_size()
 
+    def toggle_redhead(self):
+        # type: () -> None
+        """红头着色开关：所有窗口、所有标签一起切换，保持观感一致。"""
+        _REDHEAD["on"] = bool(self.redhead_var.get())
+        self._refresh_all_views()
+        if self.view is not None:
+            self.set_status("红头着色：%s" % ("开" if _REDHEAD["on"] else "关"))
+
+    def toggle_seal_color(self):
+        # type: () -> None
+        """印章着色开关：只影响灰度印章，彩色印章原样显示。"""
+        _SEALCOLOR["on"] = bool(self.seal_var.get())
+        self._refresh_all_views()
+        if self.view is not None:
+            self.set_status("印章着色：%s" % ("开" if _SEALCOLOR["on"] else "关"))
+
+    def _refresh_all_views(self):
+        # type: () -> None
+        """把显示开关同步到所有窗口，并让每个标签重绘。"""
+        for win in list(_WINDOWS):
+            try:
+                if bool(win.redhead_var.get()) != redhead_enabled():
+                    win.redhead_var.set(redhead_enabled())
+                if bool(win.seal_var.get()) != seal_color_enabled():
+                    win.seal_var.set(seal_color_enabled())
+            except Exception:
+                pass
+            for view in list(win._views):
+                try:
+                    view.refresh_render()
+                except Exception:
+                    pass
+
     def copy_selection(self, _event=None):
         # type: (object) -> object
         if self.view is not None:
@@ -2657,6 +2737,26 @@ def run_gui_smoke(source, report_path=""):
             detached.close_window()
             pump(0.5)
             ok = check(True, "关闭独立窗口") and ok
+
+        # 显示开关：红头着色 / 印章着色（默认关闭，切换后要重绘）
+        ok = check(not redhead_enabled() and not seal_color_enabled(),
+                   "着色开关默认关闭") and ok
+        app.redhead_var.set(True)
+        app.toggle_redhead()
+        app.seal_var.set(True)
+        app.toggle_seal_color()
+        pump(1.0)
+        live = app.view
+        ok = check(redhead_enabled() and seal_color_enabled()
+                   and live is not None and len(live._cache) > 0,
+                   "着色开关打开后立即重绘") and ok
+        app.redhead_var.set(False)
+        app.toggle_redhead()
+        app.seal_var.set(False)
+        app.toggle_seal_color()
+        pump(0.6)
+        ok = check(not redhead_enabled() and not seal_color_enabled(),
+                   "着色开关可复原") and ok
 
         # 关掉主窗口最后一个标签，应回到空状态且不报错
         app.close_all()

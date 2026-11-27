@@ -504,15 +504,16 @@ class Table(object):
 
 
 class ImageItem(object):
-    __slots__ = ("data", "ext", "box", "page", "resource_id", "sha1")
+    __slots__ = ("data", "ext", "box", "page", "resource_id", "sha1", "alpha")
 
-    def __init__(self, data, ext, box, page, resource_id, sha1):
+    def __init__(self, data, ext, box, page, resource_id, sha1, alpha=255.0):
         self.data = data
         self.ext = ext
         self.box = box
         self.page = page
         self.resource_id = resource_id
         self.sha1 = sha1
+        self.alpha = alpha
 
 
 class PageModel(object):
@@ -2640,7 +2641,11 @@ def load_images(page_root, pkg, res, page_box, page_no, report):
             continue
         import hashlib
         digest = hashlib.sha1(data).hexdigest()
-        items.append(ImageItem(data, ext, box, page_no, rid, digest))
+        # Alpha 是 0–255 的整体不透明度，电子印章常见 160 左右；
+        # 以前没读，印章会以全不透明盖上，把日期压得看不清。
+        alpha = attr_float(obj, "Alpha", 255.0)
+        alpha = max(0.0, min(255.0, alpha))
+        items.append(ImageItem(data, ext, box, page_no, rid, digest, alpha))
     return items, skipped
 
 
@@ -3535,6 +3540,10 @@ def build_argparser():
                         help="只转换指定页，如 1-3,5（默认全部）")
     parser.add_argument("--no-table", action="store_true", dest="no_table",
                         help="关闭表格识别，全部按正文输出")
+    parser.add_argument("--redhead", action="store_true",
+                        help="把灰度红头（机关标志 + 分隔线）按公文红绘制到 Word 图层")
+    parser.add_argument("--seal-color", action="store_true", dest="seal_color",
+                        help="把灰度印章按朱红绘制到 Word 图层")
     parser.add_argument("--strict", action="store_true",
                         help="有任何告警时返回退出码 4")
     parser.add_argument("--report", default="",
@@ -3643,7 +3652,14 @@ def main(argv=None):
     # 矢量图形与印章靠渲染层画成透明图层，这里延迟导入避免核心模块强依赖 Pillow
     try:
         import ofd_view as _view
-        options.overlay_func = _view.overlay_png
+        red = bool(getattr(args, "redhead", False))
+        seal = bool(getattr(args, "seal_color", False))
+        if red or seal:
+            options.overlay_func = (
+                lambda page, skip=None: _view.overlay_png(
+                    page, skip, redhead=red, seal_red=seal))
+        else:
+            options.overlay_func = _view.overlay_png
     except Exception:
         options.overlay_func = None
 
@@ -4274,6 +4290,71 @@ def run_self_test(out_dir="", verbose=0):
                   "实测 %.0f mm²" % ink)
     except Exception as exc:
         check("用例 8 执行", False, "%s: %s" % (type(exc).__name__, exc))
+
+    # ---- 用例 9：红头 / 印章着色的识别边界 --------------------------
+    print("[9] 红头与印章着色：识别命中与不误伤")
+    try:
+        import ofd_view as _ov2
+        from PIL import Image as _Img, ImageDraw as _ImgDraw
+
+        class _FakePage(object):
+            def __init__(self, index, box, vectors):
+                self.index = index
+                self.box = box
+                self.vectors = vectors
+
+        def _glyph(gid, x, y, w=8.0, h=12.0, color=(77, 77, 77)):
+            return {"points": [(x, y), (x + w, y), (x + w, y + h), (x, y + h)],
+                    "fill": True, "fill_color": color, "stroke": False,
+                    "stroke_color": color, "group": gid}
+
+        def _line(gid, color=(77, 77, 77)):
+            return {"points": [(28.0, 62.0), (190.0, 62.0),
+                               (190.0, 63.0), (28.0, 63.0)],
+                    "fill": True, "fill_color": color, "stroke": False,
+                    "stroke_color": color, "group": gid}
+
+        a4 = Box(0.0, 0.0, 210.0, 297.0)
+        glyphs = [_glyph("g%d" % i, 30.0 + i * 9.0, 38.0) for i in range(6)]
+        page_ok = _FakePage(1, a4, glyphs + [_line("ln")])
+        keys = _ov2.redhead_groups(page_ok)
+        check("灰度红头被识别（6 字 + 1 线）", len(keys) == 7, repr(sorted(keys)))
+
+        colored = [_glyph("c%d" % i, 30.0 + i * 9.0, 38.0, color=(200, 20, 20))
+                   for i in range(6)]
+        check("已有彩色红头不改", not _ov2.redhead_groups(
+            _FakePage(1, a4, colored + [_line("ln2", (200, 20, 20))])))
+
+        low = [_glyph("d%d" % i, 30.0 + i * 9.0, 240.0) for i in range(6)]
+        check("页面底部的大字不算红头",
+              not _ov2.redhead_groups(_FakePage(1, a4, low + [_line("ln3")])))
+
+        check("第 2 页不做红头识别", not _ov2.redhead_groups(
+            _FakePage(2, a4, glyphs + [_line("ln4")])))
+
+        changed = _ov2.apply_redhead(page_ok)
+        reds = [it["fill_color"] for it in changed if it["group"] == "g0"]
+        grays = [it["fill_color"] for it in page_ok.vectors if it["group"] == "g0"]
+        check("着色只改副本，不动页面模型",
+              reds == [_ov2.REDHEAD_RED] and grays == [(77, 77, 77)],
+              "%r / %r" % (reds, grays))
+
+        seal = _Img.new("L", (300, 300), 255)
+        _ImgDraw.Draw(seal).ellipse((24, 24, 276, 276), outline=0, width=16)
+        check("灰度圆章被认成印章", _ov2._looks_like_seal(seal, Box(40, 40, 40, 40)))
+        check("灰度照片不被认成印章",
+              not _ov2._looks_like_seal(seal, Box(40, 40, 130, 90)))
+        colored_seal = _Img.new("RGB", (300, 300), (255, 255, 255))
+        _ImgDraw.Draw(colored_seal).ellipse((24, 24, 276, 276),
+                                           outline=(200, 20, 20), width=16)
+        check("彩色印章不再染色",
+              not _ov2._looks_like_seal(colored_seal, Box(40, 40, 40, 40)))
+        red_seal = _ov2.gray_to_seal(seal, 160.0)
+        px = red_seal.getpixel((150, 20))
+        check("灰度印章染成朱红且带半透明",
+              px[0] > px[1] and px[3] < 255 and px[0] > 0, repr(px))
+    except Exception as exc:
+        check("用例 9 执行", False, "%s: %s" % (type(exc).__name__, exc))
 
     # ---- 汇总 -------------------------------------------------------
     failed = [r for r in results if not r[1]]

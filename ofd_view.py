@@ -364,11 +364,11 @@ def _vector_group_rgba(items, ppm, page_w, page_h):
     return (int(round(x0 * ppm)), int(round(y0 * ppm)), layer)
 
 
-def _draw_vectors(base, page, ppm):
-    # type: (Image.Image, object, float) -> None
-    for group in _group_vectors(page.vectors):
+def _draw_vectors(base, items, page_w, page_h, ppm):
+    # type: (Image.Image, list, float, float, float) -> None
+    for group in _group_vectors(items):
         try:
-            drawn = _vector_group_rgba(group, ppm, page.box.w, page.box.h)
+            drawn = _vector_group_rgba(group, ppm, page_w, page_h)
         except Exception:
             drawn = None
         if drawn is None:
@@ -377,20 +377,210 @@ def _draw_vectors(base, page, ppm):
         base.paste(layer, pos, layer)
 
 
+# -- 红头着色 -------------------------------------------------------------
+# 公文「发文机关标志」与红色分隔线的标准色（#FF0000）。有些流水线会把整份
+# 文件压成灰度（纯红 255,0,0 的亮度恰好是 77），阅览时就变成灰字灰线。
+# 这里只做"把明显是红头的东西染回红色"，默认关闭，由用户显式打开。
+REDHEAD_RED = (255, 0, 0)
 
-def _draw_images(base, page, ppm):
-    # type: (Image.Image, object, float) -> int
+
+def _achromatic(color, tol=10):
+    # type: (tuple, int) -> bool
+    try:
+        vals = [int(c) for c in color[:3]]
+    except Exception:
+        return False
+    return max(vals) - min(vals) <= tol
+
+
+def redhead_groups(page, items=None):
+    # type: (object, list) -> set
+    """认出"灰度红头"：第 1 页顶部一排大号矢量字 + 其下方的细长横线。
+
+    只认无彩色（灰度/黑）的图形，所以本来就上了色的文件不会被改；
+    返回需要染红的 group 集合，空集表示这一页不像红头。
+    """
+    if getattr(page, "index", 1) != 1:
+        return set()
+    items = page.vectors if items is None else items
+    if not items:
+        return set()
+    page_w = page.box.w
+    page_h = page.box.h
+    band = 0.42 * page_h
+
+    groups = {}        # type: dict
+    for item in items:
+        key = item.get("group")
+        if key is None:
+            continue
+        pts = item["points"]
+        if not pts:
+            continue
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        info = groups.get(key)
+        if info is None:
+            info = groups[key] = {"x0": min(xs), "x1": max(xs),
+                                  "y0": min(ys), "y1": max(ys),
+                                  "colors": set()}
+        else:
+            info["x0"] = min(info["x0"], min(xs))
+            info["x1"] = max(info["x1"], max(xs))
+            info["y0"] = min(info["y0"], min(ys))
+            info["y1"] = max(info["y1"], max(ys))
+        if item.get("fill"):
+            info["colors"].add(tuple(item.get("fill_color") or (0, 0, 0)))
+        if item.get("stroke"):
+            info["colors"].add(tuple(item.get("stroke_color") or (0, 0, 0)))
+
+    glyphs = []        # type: list
+    lines = []         # type: list
+    for key, info in groups.items():
+        if info["y1"] > band:
+            continue
+        if not info["colors"] or not all(_achromatic(c) for c in info["colors"]):
+            continue
+        w = info["x1"] - info["x0"]
+        h = info["y1"] - info["y0"]
+        if h >= 6.0 and 0.35 * h <= w <= 3.2 * h:
+            glyphs.append((key, info, w, h))
+        elif h <= 1.6 and w >= 0.35 * page_w:
+            lines.append((key, info, w, h))
+
+    # 机关标志是一排字：至少 4 个，且落在同一条水平带上、横向铺开
+    if len(glyphs) < 4:
+        return set()
+    med_h = sorted(g[3] for g in glyphs)[len(glyphs) // 2]
+    shared = min(g[1]["y1"] for g in glyphs) - max(g[1]["y0"] for g in glyphs)
+    if shared < 0.5 * med_h:
+        return set()
+    span = max(g[1]["x1"] for g in glyphs) - min(g[1]["x0"] for g in glyphs)
+    if span < 0.25 * page_w:
+        return set()
+
+    chosen = set(g[0] for g in glyphs)
+    # 红色分隔线：紧跟在机关标志下方（公文里在发文字号之下，一般 10–40mm）
+    bottom = max(g[1]["y1"] for g in glyphs)
+    for key, info, _w, _h in lines:
+        if bottom - 2.0 <= info["y0"] <= bottom + 45.0:
+            chosen.add(key)
+    return chosen
+
+
+def apply_redhead(page, items=None):
+    # type: (object, list) -> list
+    """把认出来的红头图形改成公文红，返回新的列表（不改动页面模型）。"""
+    items = page.vectors if items is None else items
+    keys = redhead_groups(page, items)
+    if not keys:
+        return items
+    out = []           # type: list
+    for item in items:
+        if item.get("group") in keys:
+            item = dict(item)
+            item["fill_color"] = REDHEAD_RED
+            item["stroke_color"] = REDHEAD_RED
+        out.append(item)
+    return out
+
+
+
+SEAL_RED = (230, 0, 18)      # 朱红：公文电子印章的常用色
+
+
+def _is_achromatic(im, tol=24, sample=200):
+    # type: (Image.Image, int, int) -> bool
+    """图里的"墨迹"是否基本无色相（灰度/黑白）。
+
+    只看非白像素：白底不算，否则一张白纸也会被判成"没颜色"。
+    """
+    small = im.convert("RGB")
+    if small.width * small.height > sample * sample:
+        small = small.resize((sample, sample), Image.BILINEAR)
+    raw = small.tobytes()
+    ink = 0
+    chromatic = 0
+    for i in range(0, len(raw) - 2, 3):
+        r, g, b = raw[i], raw[i + 1], raw[i + 2]
+        if r > 238 and g > 238 and b > 238:
+            continue
+        ink += 1
+        if max(r, g, b) - min(r, g, b) > tol:
+            chromatic += 1
+    return ink == 0 or chromatic / float(ink) < 0.10
+
+
+def _looks_like_seal(im, box):
+    # type: (Image.Image, object) -> bool
+    """判断一张图"像不像印章"：灰度、近似正方、20–90mm、白底 + 一定比例墨迹。
+
+    只在用户显式打开「印章着色」时才用，宁可漏染也不要把灰度照片涂红。
+    """
+    w, h = im.size
+    if w < 8 or h < 8:
+        return False
+    side = max(box.w, box.h)
+    if not (18.0 <= side <= 90.0):
+        return False
+    ratio = box.w / max(box.h, 1e-6)
+    if not (0.60 <= ratio <= 1.65):
+        return False
+    hist = im.convert("L").histogram()
+    total = float(w * h) or 1.0
+    ink = 1.0 - sum(hist[239:]) / total
+    if not (0.03 <= ink <= 0.60):
+        return False
+    return _is_achromatic(im)
+
+
+def gray_to_seal(im, alpha=255.0):
+    # type: (Image.Image, float) -> Image.Image
+    """把灰度印章转成红色：墨色越深越不透明，浅的地方自然透明。"""
+    gray = im.convert("L")
+    mask = gray.point(lambda v: int(round((255 - v) * (float(alpha) / 255.0))))
+    out = Image.new("RGBA", gray.size, SEAL_RED + (0,))
+    out.putalpha(mask)
+    return out
+
+
+def _apply_alpha(im, alpha):
+    # type: (Image.Image, float) -> Image.Image
+    """按 OFD 的 Alpha（0–255）整体调不透明度。"""
+    if alpha >= 254.5:
+        return im
+    if im.mode != "RGBA":
+        im = im.convert("RGBA")
+    band = im.split()[3].point(lambda v: int(v * alpha / 255.0))
+    im = im.copy()
+    im.putalpha(band)
+    return im
+
+
+def _draw_images(base, page, ppm, seal_red=False):
+    # type: (Image.Image, object, float, bool) -> int
     drawn = 0
     for item in page.images:
         try:
             im = Image.open(io.BytesIO(item.data))
             im.load()
+            alpha = float(getattr(item, "alpha", 255.0) or 255.0)
+            if seal_red:
+                try:
+                    if _looks_like_seal(im, item.box):
+                        im = gray_to_seal(im, alpha)
+                        alpha = 255.0
+                except Exception:
+                    pass
             tw = max(1, int(round(item.box.w * ppm)))
             th = max(1, int(round(item.box.h * ppm)))
             im = im.resize((tw, th), Image.LANCZOS)
             pos = (int(round(item.box.x * ppm)), int(round(item.box.y * ppm)))
             if im.mode in ("RGBA", "LA", "P"):
-                im = im.convert("RGBA")
+                im = _apply_alpha(im.convert("RGBA"), alpha)
+                base.paste(im, pos, im)
+            elif alpha < 254.5:
+                im = _apply_alpha(im.convert("RGBA"), alpha)
                 base.paste(im, pos, im)
             else:
                 base.paste(im.convert("RGB"), pos)
@@ -421,20 +611,31 @@ def _draw_text(draw, page, resolver, ppm):
     return count
 
 
-def seal_rgba(data):
-    # type: (bytes) -> object
+def seal_rgba(data, recolor=False):
+    # type: (bytes, bool) -> object
     """把印章图转成"白底透明"的 RGBA。
 
     签章里的印章多数是白底不透明的 GIF，直接贴会把下面的文字整块盖住；
     把接近纯白的像素设成透明后，红色笔画仍然清晰，文字也读得出来。
+
+    recolor=True 时：若印章本身是灰度的（整份文件被压成灰的情况），按墨色
+    深浅生成红色印章；已经是彩色的印章原样返回，不上色。
     """
     import hashlib
-    key = hashlib.sha1(data).hexdigest()
+    key = (hashlib.sha1(data).hexdigest(), bool(recolor))
     hit = _SEAL_CACHE.get(key)
     if hit is not None:
         return hit
     im = Image.open(io.BytesIO(data))
     im.load()
+    if recolor:
+        try:
+            if _is_achromatic(im):
+                out = gray_to_seal(im)
+                _SEAL_CACHE[key] = out
+                return out
+        except Exception:
+            pass
     im = im.convert("RGBA")
     gray = im.convert("L")
     alpha = gray.point(lambda v: 0 if v > 238 else 255)
@@ -443,13 +644,13 @@ def seal_rgba(data):
     return im
 
 
-def _draw_stamps(base, page, ppm):
-    # type: (Image.Image, object, float) -> int
+def _draw_stamps(base, page, ppm, seal_red=False):
+    # type: (Image.Image, object, float, bool) -> int
     """画电子印章。印章盖在文字之上，符合实际观感。"""
     drawn = 0
     for stamp in getattr(page, "stamps", []) or []:
         try:
-            im = seal_rgba(stamp["data"])
+            im = seal_rgba(stamp["data"], seal_red)
             box = stamp["box"]
             tw = max(1, int(round(box.w * ppm)))
             th = max(1, int(round(box.h * ppm)))
@@ -462,9 +663,14 @@ def _draw_stamps(base, page, ppm):
     return drawn
 
 
-def render_page(page, resolver=None, dpi=110.0, scale=1.0, draw_blank_hint=False):
-    # type: (object, FontResolver, float, float, bool) -> Image.Image
-    """把一页 PageModel 画成 PIL 图像。dpi 控制清晰度，scale 用于缩放预览。"""
+def render_page(page, resolver=None, dpi=110.0, scale=1.0, draw_blank_hint=False,
+                redhead=False, seal_red=False):
+    # type: (object, FontResolver, float, float, bool, bool, bool) -> Image.Image
+    """把一页 PageModel 画成 PIL 图像。dpi 控制清晰度，scale 用于缩放预览。
+
+    redhead=True  把识别出的灰度红头（机关标志 + 分隔线）按公文红绘制；
+    seal_red=True 把灰度印章按朱红绘制。
+    """
     if resolver is None:
         resolver = FontResolver()
     ppm = max(0.5, float(dpi) / 25.4 * float(scale))
@@ -473,10 +679,11 @@ def render_page(page, resolver=None, dpi=110.0, scale=1.0, draw_blank_hint=False
     image = Image.new("RGB", (width, height), (255, 255, 255))
     draw = ImageDraw.Draw(image)
 
-    _draw_vectors(image, page, ppm)
-    _draw_images(image, page, ppm)
+    vectors = apply_redhead(page) if redhead else page.vectors
+    _draw_vectors(image, vectors, page.box.w, page.box.h, ppm)
+    _draw_images(image, page, ppm, seal_red)
     _draw_text(draw, page, resolver, ppm)
-    _draw_stamps(image, page, ppm)
+    _draw_stamps(image, page, ppm, seal_red)
 
     if draw_blank_hint and not page.lines and not page.images and not page.vectors:
         try:
@@ -499,8 +706,8 @@ def _rect_matches(box, rects, tol=0.8):
     return False
 
 
-def overlay_png(page, skip_rects=None, dpi=150.0):
-    # type: (object, object, float) -> object
+def overlay_png(page, skip_rects=None, dpi=150.0, redhead=False, seal_red=False):
+    # type: (object, object, float, bool, bool) -> object
     """把一页的矢量图形与印章画成一张整页透明 PNG，供 Word 浮动图层使用。
 
     文字仍由 Word 自己排（可编辑可搜索），这里只补"不是文字"的东西：
@@ -510,6 +717,8 @@ def overlay_png(page, skip_rects=None, dpi=150.0):
     stamps = getattr(page, "stamps", None) or []
     if not vectors and not stamps:
         return None
+    if redhead:
+        vectors = apply_redhead(page, vectors)
     ppm = max(0.5, float(dpi) / 25.4)
     width = max(1, int(round(page.box.w * ppm)))
     height = max(1, int(round(page.box.h * ppm)))
@@ -538,7 +747,7 @@ def overlay_png(page, skip_rects=None, dpi=150.0):
 
     for stamp in stamps:
         try:
-            im = seal_rgba(stamp["data"])
+            im = seal_rgba(stamp["data"], seal_red)
             box = stamp["box"]
             tw = max(1, int(round(box.w * ppm)))
             th = max(1, int(round(box.h * ppm)))
