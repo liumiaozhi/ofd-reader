@@ -2043,7 +2043,11 @@ def path_subpaths(cmds):
                 continue
             x, y = nums[0], nums[1]
             if cur is None:
+                # "S" 之后可能跟着多个 "C"（闭合）分段：闭合后的第一个 L 才是
+                # 新子路径的起点。若继续沿用最初 S 的坐标，每段快结束时都会被
+                # 强拉回同一个点，字形上就出现一根根斜线（红头字体尤其明显）。
                 cur = [(x, y)]
+                start = (x, y)
             else:
                 cur.append((x, y))
         elif cmd in ("C", "Z"):
@@ -2061,6 +2065,7 @@ def path_subpaths(cmds):
             p1 = (nums[2], nums[3])
             if cur is None:
                 cur = [p0]
+                start = p0
             for t in (0.25, 0.5, 0.75, 1.0):
                 cur.append(_quad_point(p0, c1, p1, t))
             x, y = p1
@@ -2074,6 +2079,7 @@ def path_subpaths(cmds):
             p1 = (nums[4], nums[5])
             if cur is None:
                 cur = [p0]
+                start = p0
             for t in (0.2, 0.4, 0.6, 0.8, 1.0):
                 cur.append(_cubic_point(p0, c1, c2, p1, t))
             x, y = p1
@@ -2084,6 +2090,7 @@ def path_subpaths(cmds):
             p1 = (nums[5], nums[6])
             if cur is None:
                 cur = [(x, y)]
+                start = (x, y)
             cur.append(p1)
             x, y = p1
             curved = True
@@ -2265,6 +2272,11 @@ def extract_vectors(page_root, res, page_box, page_no, report):
         stroke_color = res.object_color(po, "StrokeColor", dp)
         fill_color = res.object_color(po, "FillColor", dp)
         dashed = bool(parse_array(attr(po, "DashPattern")))
+        # Rule 决定同一 PathObject 内多个子路径如何合成：Even-Odd 奇偶填充、
+        # 其余按 Non-Zero。默认 Non-Zero（GB/T 33190）。
+        rule = attr(po, "Rule") or "Non-Zero"
+        group = "po:%s:%d" % (attr(po, "ID") or "?", len(out))
+        sub_no = 0
         for pts, curved in path_subpaths(parse_path_data(raw)):
             if len(pts) < 2:
                 continue
@@ -2275,13 +2287,21 @@ def extract_vectors(page_root, res, page_box, page_no, report):
             out.append({
                 "points": mapped,
                 "closed": closed,
+                "curved": bool(curved),
+                # 填充不要求显式闭合：按 PDF/OFD 语义，填充时子路径隐式闭合。
+                # 之前用 closed 卡填充，会把"没写 C 命令"的字形轮廓整条丢掉，
+                # 红头这类"文字转矢量"的图形因此只剩几条边，看起来就是字被切碎。
+                "fill": do_fill,
                 "stroke": do_stroke,
-                "fill": do_fill and closed,
+                "rule": str(rule),
+                "group": group,
+                "sub": sub_no,
                 "stroke_color": stroke_color,
                 "fill_color": fill_color,
                 "width": max(0.05, min(width, 5.0)),
                 "dash": dashed,
             })
+            sub_no += 1
     return out
 
 
@@ -4213,6 +4233,47 @@ def run_self_test(out_dir="", verbose=0):
             pkg_p.close()
     except Exception as exc:
         check("用例 7 执行", False, "%s: %s" % (type(exc).__name__, exc))
+
+    # ---- 用例 8：矢量轮廓的多段闭合与奇偶填充 ----------------------
+    print("[8] 矢量轮廓：多段 C 闭合 / 填充不要求显式闭合 / Even-Odd")
+    try:
+        # 一个 S 后面跟两个 C 段：这类写法在 WPS 导出的公文里很常见
+        raw = ("S 10 10 L 40 10 L 40 40 L 10 40 C L 20 20 L 30 20 L 30 30 L 20 30 C")
+        subs = path_subpaths(parse_path_data(raw))
+        check("识别出 2 段子路径", len(subs) == 2, "实际 %d" % len(subs))
+        if len(subs) == 2:
+            check("第二段以自身首点收尾（不被拉回原点）",
+                  subs[1][0][0] == (20.0, 20.0) and subs[1][0][-1] == (20.0, 20.0),
+                  "起点 %r 收尾 %r" % (subs[1][0][0], subs[1][0][-1]))
+
+        po = ('<ofd:PathObject ID="700" Boundary="0 0 210 297" Rule="Even-Odd" '
+              'Stroke="false" Fill="true"><ofd:AbbreviatedData>%s'
+              '</ofd:AbbreviatedData></ofd:PathObject>' % raw)
+        root = parse_xml((_xml_decl() + '<ofd:Page xmlns:ofd="%s"><ofd:Content>'
+                          '<ofd:Layer ID="1">%s</ofd:Layer></ofd:Content>'
+                          '</ofd:Page>' % (OFD_NS, po)).encode("utf-8"), "selftest")
+        vectors = extract_vectors(root, ResourceTable(), Box(0.0, 0.0, 210.0, 297.0),
+                                  1, Report())
+        check("两条子路径都参与填充（Fill=true）",
+              len(vectors) == 2 and all(v["fill"] for v in vectors),
+              repr([v["fill"] for v in vectors]))
+        check("同一 PathObject 归为同一组",
+              len({v["group"] for v in vectors}) == 1)
+        check("Rule 透传到渲染层",
+              all(v["rule"] == "Even-Odd" for v in vectors))
+
+        import ofd_view as _ov
+        drawn = _ov._vector_group_rgba(vectors, 10.0, 210.0, 297.0)
+        if drawn is None:
+            check("整组可栅格化", False, "返回 None")
+        else:
+            alpha = drawn[2].split()[3]
+            ink = sum(1 for v in alpha.getdata() if v > 0) / 100.0
+            # 30x30 外框减 10x10 内孔 = 800 mm²
+            check("奇偶填充挖掉内孔（面积≈800mm²）", abs(ink - 800.0) <= 60.0,
+                  "实测 %.0f mm²" % ink)
+    except Exception as exc:
+        check("用例 8 执行", False, "%s: %s" % (type(exc).__name__, exc))
 
     # ---- 汇总 -------------------------------------------------------
     failed = [r for r in results if not r[1]]

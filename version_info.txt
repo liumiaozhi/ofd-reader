@@ -18,12 +18,12 @@ VSVersionInfo(
           '080404B0',
           [StringStruct('CompanyName', '个人工具'),
            StringStruct('FileDescription', 'OFD 版式文档阅读与转换'),
-           StringStruct('FileVersion', '1.2.3.0'),
+           StringStruct('FileVersion', '1.2.4.0'),
            StringStruct('InternalName', 'ofd_reader'),
            StringStruct('LegalCopyright', ''),
            StringStruct('OriginalFilename', 'ofd阅读转换器.exe'),
            StringStruct('ProductName', 'OFD 阅读转换器'),
-           StringStruct('ProductVersion', '1.2.3.0')])
+           StringStruct('ProductVersion', '1.2.4.0')])
       ]),
     VarFileInfo([VarStruct('Translation', [2052, 1200])])
   ]

@@ -44,7 +44,7 @@ except Exception:                                  # pragma: no cover
     ImageTk = None
 
 APP_NAME = "OFD 阅读转换器"
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.2.4"
 PROGID = "OFDReader.Document"
 APP_ID = "Local.OFDReader.1"
 

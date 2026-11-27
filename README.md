@@ -153,7 +153,6 @@ dist\ofd阅读转换器.exe --smoke-gui 样本.ofd --report gui.txt
 | `tools/make_sample.py` | 合成演示用 OFD（自测、CI 与截图都用它，内容虚构） |
 | `tools/capture_screenshots.py` | 生成 README 截图（需要桌面环境） |
 | `tools/inspect_ofd.py` | 红头体检：列出某页顶部对象的字号/字体/CTM/颜色，定位显示异常 |
-| `tools/inspect_ofd.py` | 红头体检：列出某页顶部对象的字号/字体/CTM/颜色，定位显示异常 |
 | `docs/screenshots/` | README 用的界面截图 |
 | `LICENSE` | MIT 许可证 |
 | `tests/` | 校验脚本：文本逐行比对、纵向位置精度、用 Word 打开验证 |
@@ -172,6 +171,8 @@ dist\ofd阅读转换器.exe --smoke-gui 样本.ofd --report gui.txt
 **阅读视图**
 
 1. 按页面渲染，文字、图片、矢量线条、**电子印章**都会画出来；阴影、渐变、裁剪路径、透明度叠加等装饰效果不还原。
+   矢量图形按 `Rule` 声明的**奇偶（Even-Odd）或非零环绕**规则填充，所以"文字转曲"的红头大标题、徽标能正确显示，
+   不会出现笔画被切成条带或斜线穿过字身。
 2. 印章从签章数据（`SignValue.dat`）里的内嵌图片提取，白底会自动转透明，盖在文字上仍能读出字。
    若签章里没有图片（只有数字签名），则没有可视印章。
 3. 缺字体时用系统相近字体替代（例如本机没装「方正小标宋简体」，大标题会用宋体显示）。
@@ -218,10 +219,8 @@ dist\ofd阅读转换器.exe --smoke-gui 样本.ofd --report gui.txt
 | 导出 Word 提示文件被占用 | 先关掉已经打开的 Word 文档 |
 | 表格没识别出来 | 该表格没有完整边框线，识别置信度不足会按正文输出（报告里有 `TABLE_REJECTED`） |
 | 标签太多看不到后面的 | 标签栏支持横向滚动：在标签栏上滚轮，或拖动下方滑块 |
-| 红头颜色发黑/发灰 | 该文件的颜色可能用调色板（ColorSpace Type="Index"）。1.2.2 之前的版本会把索引当 RGB，现已支持；若仍不对，用 `python tools/inspect_ofd.py 文件.ofd` 看颜色空间与对象属性 |
-| 红头文字错位/重叠 | 同上，用 `tools/inspect_ofd.py` 把「顶部对象」发我：重点看字号（mm 与 pt）、CTM、模板页与 Clips |
-| 红头颜色发黑/发灰 | 该文件的颜色可能用调色板（ColorSpace Type="Index"）。1.2.2 之前的版本会把索引当 RGB，现已支持；若仍不对，用 `python tools/inspect_ofd.py 文件.ofd` 看颜色空间与对象属性 |
-| 红头文字错位/重叠 | 同上，用 `tools/inspect_ofd.py` 把「顶部对象」发我：重点看字号（mm 与 pt）、CTM、模板页与 Clips |
+| 红头颜色发黑/发灰 | 该文件的颜色可能用调色板（ColorSpace Type="Index"）。1.2.2 之前的版本会把索引当 RGB，现已支持；若仍不对，用 `python tools/inspect_ofd.py 文件.ofd` 看颜色空间与对象属性。另：部分文件本身是灰度流水线产物（红头被压成 `77 77 77`，恰好等于纯红的亮度），这是文件里就没有彩色，不是渲染丢色 |
+| 红头文字错位/重叠/被切成条带 | 1.2.3 及以前：`红头`多为"文字转曲"的 `PathObject`，且一个 `S` 后面跟多个 `C` 分段；旧版把每段都连回最初的起点、又要求子路径"显式闭合"才填充，于是只剩几条边。1.2.4 已修（起点按段重置 + 填充不再要求闭合 + 按 Rule 合成）。若仍异常，把 `python tools/inspect_ofd.py 文件.ofd` 的「顶部对象」发我 |
 | 想同时看两份文件 | 双击其中一个标签拆成独立窗口，两个窗口可并排摆放 |
 
 ## 八、持续集成

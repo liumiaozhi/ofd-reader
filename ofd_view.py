@@ -15,7 +15,7 @@
 import io
 import os
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 import ofd2docx as ox
 
@@ -214,27 +214,168 @@ class FontResolver(object):
         return font
 
 
-def _draw_vectors(draw, page, ppm):
-    # type: (ImageDraw.ImageDraw, object, float) -> None
-    for item in page.vectors:
-        pts = [(round(x * ppm, 2), round(y * ppm, 2)) for (x, y) in item["points"]]
-        if len(pts) < 2:
+def _poly_area(pts):
+    # type: (list) -> float
+    """带符号面积。正负代表环绕方向，用来区分字形外轮廓与内部的"洞"。"""
+    n = len(pts)
+    if n < 3:
+        return 0.0
+    total = 0.0
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % n]
+        total += x1 * y2 - x2 * y1
+    return total * 0.5
+
+
+def _group_vectors(items):
+    # type: (list) -> list
+    """把同一 PathObject 拆出的子路径收回一组。
+
+    Even-Odd 规则只在"同一个 PathObject 的多个子路径"之间生效：外轮廓与
+    中间的洞必须一起参与运算，单独填每一条只会得到实心块或碎片。
+    """
+    groups = []       # type: list
+    cur_key = object()
+    for item in items:
+        key = item.get("group")
+        if key is None:
+            groups.append([item])
+            cur_key = object()
             continue
-        if item.get("fill") and len(pts) >= 3:
-            try:
-                draw.polygon(pts, fill=tuple(item["fill_color"]))
-            except Exception:
-                pass
+        if not groups or key != cur_key:
+            groups.append([item])
+            cur_key = key
+        else:
+            groups[-1].append(item)
+    return groups
+
+
+def _mask_union(polys, size):
+    # type: (list, tuple) -> object
+    mask = Image.new("1", size, 0)
+    draw = ImageDraw.Draw(mask)
+    for pts in polys:
+        if len(pts) < 3:
+            continue
+        try:
+            draw.polygon(pts, fill=1)
+        except Exception:
+            continue
+    return mask
+
+
+def _vector_group_rgba(items, ppm, page_w, page_h):
+    # type: (list, float, float, float) -> object
+    """把一组矢量路径画成一张局部 RGBA 图，返回 (x, y, image) 或 None。
+
+    要点：
+    - 按 PathObject 的 Rule 合成子路径（奇偶 XOR / 非零按环绕方向挖洞）；
+    - 2 倍超采样后缩小，边缘不会出现锯齿（公文红头字大，锯齿很明显）。
+    """
+    xs = []           # type: list
+    ys = []           # type: list
+    stroke_max = 0.0
+    has_fill = False
+    has_stroke = False
+    for item in items:
+        for (x, y) in item["points"]:
+            xs.append(x)
+            ys.append(y)
+        if item.get("fill"):
+            has_fill = True
         if item.get("stroke"):
-            width = max(1, int(round(item["width"] * ppm)))
+            has_stroke = True
+            stroke_max = max(stroke_max, float(item.get("width") or 0.0))
+    if not xs or (not has_fill and not has_stroke):
+        return None
+
+    pad = stroke_max * 0.5 + 0.6
+    x0 = max(0.0, min(xs) - pad)
+    y0 = max(0.0, min(ys) - pad)
+    x1 = min(page_w, max(xs) + pad)
+    y1 = min(page_h, max(ys) + pad)
+    if x1 - x0 < 0.05 or y1 - y0 < 0.05:
+        return None
+
+    ss = 2
+    w = int(round((x1 - x0) * ppm * ss))
+    h = int(round((y1 - y0) * ppm * ss))
+    if w < 1 or h < 1:
+        return None
+    if w * h > 16000000:          # 整页底纹这类巨图不超采样，免得住满内存
+        ss = 1
+        w = max(1, int(round((x1 - x0) * ppm)))
+        h = max(1, int(round((y1 - y0) * ppm)))
+
+    def local(pts):
+        return [((x - x0) * ppm * ss, (y - y0) * ppm * ss) for (x, y) in pts]
+
+    fw = max(1, w // ss)
+    fh = max(1, h // ss)
+    size = (w, h)                 # 超采样空间，用来画
+    out_size = (fw, fh)           # 最终交付尺寸
+    layer = Image.new("RGBA", out_size, (0, 0, 0, 0))
+
+    fill_items = [it for it in items if it.get("fill") and len(it["points"]) >= 3]
+    if fill_items:
+        rule = str(fill_items[0].get("rule") or "Non-Zero").lower()
+        polys = [local(it["points"]) for it in fill_items]
+        if rule.startswith("even"):
+            mask = None
+            for pts in polys:
+                one = _mask_union([pts], size)
+                mask = one if mask is None else ImageChops.logical_xor(mask, one)
+        else:
+            pos = [p for p in polys if _poly_area(p) >= 0]
+            neg = [p for p in polys if _poly_area(p) < 0]
+            s_pos = sum(abs(_poly_area(p)) for p in pos)
+            s_neg = sum(abs(_poly_area(p)) for p in neg)
+            if pos and neg and min(s_pos, s_neg) > 0:
+                outer, inner = (pos, neg) if s_pos >= s_neg else (neg, pos)
+                mask = ImageChops.subtract(_mask_union(outer, size),
+                                           _mask_union(inner, size))
+            else:
+                mask = _mask_union(polys, size)
+        if mask is not None:
+            mask = mask.convert("L").resize(out_size, Image.LANCZOS)
+            color = tuple(fill_items[0]["fill_color"]) + (255,)
+            layer.paste(Image.new("RGBA", out_size, color), (0, 0), mask)
+
+    stroke_items = [it for it in items if it.get("stroke") and len(it["points"]) >= 2]
+    if stroke_items:
+        smask = Image.new("L", size, 0)
+        sdraw = ImageDraw.Draw(smask)
+        for it in stroke_items:
+            pts = local(it["points"])
+            width = max(1, int(round(float(it.get("width") or 0.35) * ppm * ss)))
+            color = tuple(it["stroke_color"]) + (255,)
             try:
                 if len(pts) >= 3:
-                    draw.line(pts, fill=tuple(item["stroke_color"]),
-                              width=width, joint="curve")
+                    sdraw.line(pts, fill=255, width=width, joint="curve")
                 else:
-                    draw.line(pts, fill=tuple(item["stroke_color"]), width=width)
+                    sdraw.line(pts, fill=255, width=width)
             except Exception:
-                pass
+                continue
+        s_color = tuple(stroke_items[0]["stroke_color"]) + (255,)
+        smask = smask.resize(out_size, Image.LANCZOS)
+        layer.paste(Image.new("RGBA", out_size, s_color), (0, 0), smask)
+
+    return (int(round(x0 * ppm)), int(round(y0 * ppm)), layer)
+
+
+def _draw_vectors(base, page, ppm):
+    # type: (Image.Image, object, float) -> None
+    for group in _group_vectors(page.vectors):
+        try:
+            drawn = _vector_group_rgba(group, ppm, page.box.w, page.box.h)
+        except Exception:
+            drawn = None
+        if drawn is None:
+            continue
+        pos, layer = (drawn[0], drawn[1]), drawn[2]
+        base.paste(layer, pos, layer)
+
 
 
 def _draw_images(base, page, ppm):
@@ -332,7 +473,7 @@ def render_page(page, resolver=None, dpi=110.0, scale=1.0, draw_blank_hint=False
     image = Image.new("RGB", (width, height), (255, 255, 255))
     draw = ImageDraw.Draw(image)
 
-    _draw_vectors(draw, page, ppm)
+    _draw_vectors(image, page, ppm)
     _draw_images(image, page, ppm)
     _draw_text(draw, page, resolver, ppm)
     _draw_stamps(image, page, ppm)
@@ -373,34 +514,27 @@ def overlay_png(page, skip_rects=None, dpi=150.0):
     width = max(1, int(round(page.box.w * ppm)))
     height = max(1, int(round(page.box.h * ppm)))
     image = Image.new("RGBA", (width, height), (255, 255, 255, 0))
-    draw = ImageDraw.Draw(image)
 
-    for item in vectors:
-        raw_pts = item["points"]
-        if skip_rects:
-            xs = [p[0] for p in raw_pts]
-            ys = [p[1] for p in raw_pts]
-            if _rect_matches((min(xs), min(ys), max(xs), max(ys)), skip_rects):
-                continue        # 已改用段落边框表达
-        pts = [(round(x * ppm, 2), round(y * ppm, 2)) for (x, y) in raw_pts]
-        if len(pts) < 2:
+    for group in _group_vectors(vectors):
+        raw_group = []
+        for item in group:
+            if skip_rects:
+                raw_pts = item["points"]
+                xs = [p[0] for p in raw_pts]
+                ys = [p[1] for p in raw_pts]
+                if _rect_matches((min(xs), min(ys), max(xs), max(ys)), skip_rects):
+                    continue        # 已改用段落边框表达
+            raw_group.append(item)
+        if not raw_group:
             continue
-        if item.get("fill") and len(pts) >= 3:
-            color = tuple(item["fill_color"]) + (255,)
-            try:
-                draw.polygon(pts, fill=color)
-            except Exception:
-                pass
-        if item.get("stroke"):
-            color = tuple(item["stroke_color"]) + (255,)
-            line_w = max(1, int(round(item["width"] * ppm)))
-            try:
-                if len(pts) >= 3:
-                    draw.line(pts, fill=color, width=line_w, joint="curve")
-                else:
-                    draw.line(pts, fill=color, width=line_w)
-            except Exception:
-                pass
+        try:
+            drawn = _vector_group_rgba(raw_group, ppm, page.box.w, page.box.h)
+        except Exception:
+            drawn = None
+        if drawn is None:
+            continue
+        layer = drawn[2]
+        image.paste(layer, (drawn[0], drawn[1]), layer)
 
     for stamp in stamps:
         try:
